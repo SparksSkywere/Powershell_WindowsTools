@@ -447,11 +447,11 @@ function Show-SimulatedDesktop {
     
     # Add additional buttons to taskbar
     $taskbarIcons = @(
-        @{ Text = "🔍"; ToolTip = "Search" },
-        @{ Text = "📂"; ToolTip = "File Explorer" },
-        @{ Text = "🌐"; ToolTip = "Edge" },
-        @{ Text = "📧"; ToolTip = "Mail" },
-        @{ Text = "⚙️"; ToolTip = "Settings" }
+        @{ Text = "S"; ToolTip = "Search" },
+        @{ Text = "F"; ToolTip = "File Explorer" },
+        @{ Text = "E"; ToolTip = "Edge" },
+        @{ Text = "M"; ToolTip = "Mail" },
+        @{ Text = "C"; ToolTip = "Settings" }
     )
     
     $posX = 60
@@ -684,7 +684,7 @@ function Show-FolderRedirection {
     $forwardButton = New-Object System.Windows.Forms.Button
     $forwardButton.Size = New-Object System.Drawing.Size(30, 25)
     $forwardButton.Location = New-Object System.Drawing.Point(40, 2)
-    $forwardButton.Text = "→"
+    $forwardButton.Text = "->"
     $forwardButton.FlatStyle = [System.Windows.Forms.FlatStyle]::Flat
     $navPanel.Controls.Add($forwardButton)
     

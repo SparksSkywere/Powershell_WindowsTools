@@ -50,7 +50,9 @@ function New-CustomGPO {
     param (
         [string]$GPOName,
         [string]$Comment,
-        [System.Collections.Hashtable[]]$RegistrySettings
+        [System.Collections.Hashtable[]]$RegistrySettings,
+        [switch]$LinkToOU,
+        [string]$OUPath
     )
     
     try {
@@ -83,6 +85,11 @@ function New-CustomGPO {
             
             # Set registry value
             Set-GPRegistryValue -Guid $gpo.Id -Key $keyPath -ValueName $valueName -Value $valueData -Type $valueType -ErrorAction Stop
+        }
+        
+        # Link GPO to OU if specified
+        if ($LinkToOU -and $OUPath) {
+            New-GPLink -Name $GPOName -Target $OUPath -LinkEnabled Yes
         }
         
         return @{
