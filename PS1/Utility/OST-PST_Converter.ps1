@@ -6,15 +6,92 @@ param(
     [string]$PSTPath
 )
 
+# Function to close any existing Outlook processes
+function Close-OutlookProcesses {
+    try {
+        Write-Host "Checking for existing Outlook processes..." -ForegroundColor Yellow
+        $outlookProcesses = Get-Process -Name "OUTLOOK" -ErrorAction SilentlyContinue
+        
+        if ($outlookProcesses) {
+            Write-Host "Found $($outlookProcesses.Count) Outlook process(es). Closing them..." -ForegroundColor Yellow
+            foreach ($process in $outlookProcesses) {
+                try {
+                    $process.CloseMainWindow()
+                    Start-Sleep -Seconds 2
+                    if (-not $process.HasExited) {
+                        $process.Kill()
+                    }
+                    Write-Host "Closed Outlook process (PID: $($process.Id))" -ForegroundColor Green
+                }
+                catch {
+                    Write-Warning "Could not close Outlook process (PID: $($process.Id)): $($_.Exception.Message)"
+                }
+            }
+            # Wait a moment for processes to fully close
+            Start-Sleep -Seconds 3
+        } else {
+            Write-Host "No existing Outlook processes found." -ForegroundColor Green
+        }
+    }
+    catch {
+        Write-Warning "Error checking for Outlook processes: $($_.Exception.Message)"
+    }
+}
+
 # Function to check if Outlook is installed
 function Test-OutlookInstalled {
     try {
-        $outlook = New-Object -ComObject Outlook.Application
-        $outlook.Quit()
-        [System.Runtime.Interopservices.Marshal]::ReleaseComObject($outlook) | Out-Null
-        return $true
+        Write-Host "Checking Outlook installation..." -ForegroundColor Yellow
+        
+        # First check if Outlook is registered as a COM object
+        $outlookProgId = "Outlook.Application"
+        $outlookType = [Type]::GetTypeFromProgID($outlookProgId)
+        if (-not $outlookType) {
+            Write-Host "Outlook COM object not found in registry." -ForegroundColor Red
+            return $false
+        }
+        
+        # Create a job to test Outlook with timeout
+        $job = Start-Job -ScriptBlock {
+            try {
+                $outlook = New-Object -ComObject Outlook.Application
+                if ($outlook) {
+                    $outlook.Quit()
+                    [System.Runtime.Interopservices.Marshal]::ReleaseComObject($outlook) | Out-Null
+                    return $true
+                }
+                return $false
+            }
+            catch {
+                return $false
+            }
+        }
+        
+        # Wait for job completion with timeout (30 seconds)
+        $timeout = 30
+        Write-Host "Testing Outlook COM interface (timeout: $timeout seconds)..." -ForegroundColor Yellow
+        
+        if (Wait-Job -Job $job -Timeout $timeout) {
+            $result = Receive-Job -Job $job
+            Remove-Job -Job $job -Force
+            
+            if ($result) {
+                Write-Host "Outlook installation verified." -ForegroundColor Green
+                return $true
+            } else {
+                Write-Host "Outlook COM interface test failed." -ForegroundColor Red
+                return $false
+            }
+        } else {
+            Write-Host "Outlook COM interface test timed out." -ForegroundColor Red
+            Remove-Job -Job $job -Force
+            # Close any Outlook processes that might be hanging
+            Close-OutlookProcesses
+            return $false
+        }
     }
     catch {
+        Write-Host "Error checking Outlook installation: $($_.Exception.Message)" -ForegroundColor Red
         return $false
     }
 }
@@ -79,6 +156,9 @@ try {
     # Phase 1: Initial setup
     Write-Progress -Activity "OST to PST Conversion" -Status "Initializing..." -PercentComplete 0
     
+    # Close any existing Outlook processes first
+    Close-OutlookProcesses
+    
     # Check if Outlook is installed
     Write-Progress -Activity "OST to PST Conversion" -Status "Checking Outlook installation..." -PercentComplete 5
     if (-not (Test-OutlookInstalled)) {
@@ -89,16 +169,37 @@ try {
     if (-not $OSTPath) {
         do {
             $OSTPath = Read-Host "Enter the path to the OST file"
+            # Clean up the path - remove surrounding quotes if present
+            $OSTPath = $OSTPath.Trim('"').Trim("'").Trim()
+            
+            Write-Host "Testing path: '$OSTPath'" -ForegroundColor Cyan
+            
             if (-not (Test-Path $OSTPath)) {
                 Write-Host "File not found. Please enter a valid path." -ForegroundColor Red
+                Write-Host "Make sure the file exists and you have access to it." -ForegroundColor Yellow
+                $OSTPath = $null
+            }
+            elseif (-not $OSTPath.EndsWith('.ost', [System.StringComparison]::OrdinalIgnoreCase)) {
+                Write-Host "Please specify a valid OST file (must have .ost extension)." -ForegroundColor Red
                 $OSTPath = $null
             }
         } while (-not $OSTPath)
     }
+    else {
+        # Clean up the provided path
+        $OSTPath = $OSTPath.Trim('"').Trim("'").Trim()
+        Write-Host "Using provided OST path: '$OSTPath'" -ForegroundColor Cyan
+    }
     
     # Validate OST file exists
     if (-not (Test-Path $OSTPath)) {
+        Write-Host "Tested path: '$OSTPath'" -ForegroundColor Red
         throw "OST file not found: $OSTPath"
+    }
+    
+    # Validate it's an OST file
+    if (-not $OSTPath.EndsWith('.ost', [System.StringComparison]::OrdinalIgnoreCase)) {
+        throw "Invalid file type. Please specify an OST file."
     }
     
     # Get PST file path if not provided
