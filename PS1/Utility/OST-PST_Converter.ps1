@@ -1,336 +1,452 @@
+<#
+.SYNOPSIS
+    Simple OST to PST Converter
+
+.DESCRIPTION
+    Converts any OST file to PST format using Outlook COM interface.
+    Simplified approach that just gets the job done.
+
+.PARAMETER OSTPath
+    Path to the OST file to convert
+
+.PARAMETER PSTPath
+    Path for the output PST file
+
+.EXAMPLE
+    .\OST-PST_Converter.ps1 -OSTPath "C:\path\to\file.ost" -PSTPath "C:\path\to\output.pst"
+#>
+
 param(
-    [Parameter(Mandatory=$false)]
     [string]$OSTPath,
-    
-    [Parameter(Mandatory=$false)]
     [string]$PSTPath
 )
 
-# Function to close any existing Outlook processes
-function Close-OutlookProcesses {
+# Helper function to clean up Outlook processes
+function Stop-OutlookProcesses {
+    Write-Host "Stopping Outlook processes..." -ForegroundColor Yellow
+    Get-Process -Name "OUTLOOK" -ErrorAction SilentlyContinue | ForEach-Object {
+        Write-Host "  Stopping PID: $($_.Id)" -ForegroundColor Cyan
+        $_.Kill()
+    }
+    Start-Sleep -Seconds 3
+}
+
+# Helper function to wait for file operations
+function Wait-ForOperation {
+    param([scriptblock]$Operation, [string]$Description, [int]$TimeoutMinutes = 10)
+    
+    Write-Host "Waiting for: $Description" -ForegroundColor Cyan
+    $timeout = (Get-Date).AddMinutes($TimeoutMinutes)
+    
+    while ((Get-Date) -lt $timeout) {
+        try {
+            $result = & $Operation
+            if ($result) { return $result }
+        } catch {
+            # Continue waiting
+        }
+        Start-Sleep -Seconds 5
+        Write-Host "." -NoNewline -ForegroundColor Gray
+    }
+    Write-Host ""
+    throw "Timeout waiting for: $Description"
+}
+
+# Main conversion function
+function Convert-OSTToPST {
+    param([string]$SourceOST, [string]$TargetPST)
+    
+    Write-Host "`n=== OST to PST Converter ===" -ForegroundColor Green
+    Write-Host "Source: $SourceOST" -ForegroundColor Cyan
+    Write-Host "Target: $TargetPST" -ForegroundColor Cyan
+    
+    # Stop any existing Outlook processes
+    Stop-OutlookProcesses
+    
+    # Validate source file
+    if (-not (Test-Path $SourceOST)) {
+        throw "OST file not found: $SourceOST"
+    }
+    
+    # Create target directory if needed
+    $targetDir = Split-Path $TargetPST -Parent
+    if (-not (Test-Path $targetDir)) {
+        New-Item -Path $targetDir -ItemType Directory -Force | Out-Null
+    }
+    
+    # Remove existing PST if it exists
+    if (Test-Path $TargetPST) {
+        Remove-Item $TargetPST -Force
+        Write-Host "Removed existing PST file" -ForegroundColor Yellow
+    }
+    
+    Write-Host "`nInitializing Outlook..." -ForegroundColor Yellow
+    
+    # Initialize Outlook COM objects
+    $outlook = $null
+    $namespace = $null
+    $ostStore = $null
+    $pstStore = $null
+    
     try {
-        Write-Host "Checking for existing Outlook processes..." -ForegroundColor Yellow
-        $outlookProcesses = Get-Process -Name "OUTLOOK" -ErrorAction SilentlyContinue
+        # Create Outlook application
+        $outlook = New-Object -ComObject Outlook.Application
+        $namespace = $outlook.GetNamespace("MAPI")
         
-        if ($outlookProcesses) {
-            Write-Host "Found $($outlookProcesses.Count) Outlook process(es). Closing them..." -ForegroundColor Yellow
-            foreach ($process in $outlookProcesses) {
-                try {
-                    $process.CloseMainWindow()
-                    Start-Sleep -Seconds 2
-                    if (-not $process.HasExited) {
-                        $process.Kill()
+        Write-Host "Loading OST file..." -ForegroundColor Yellow
+        
+        # Try to add OST store - this may fail for orphaned OST files
+        $ostLoadSuccess = $false
+        try {
+            $namespace.AddStore($SourceOST)
+            
+            # Wait for OST store to be available
+            $ostStore = Wait-ForOperation -Description "OST store to load" -TimeoutMinutes 2 -Operation {
+                foreach ($store in $namespace.Stores) {
+                    if ($store.FilePath -eq $SourceOST) {
+                        try {
+                            $rootFolder = $store.GetRootFolder()
+                            if ($rootFolder) { return $store }
+                        } catch { }
                     }
-                    Write-Host "Closed Outlook process (PID: $($process.Id))" -ForegroundColor Green
                 }
-                catch {
-                    Write-Warning "Could not close Outlook process (PID: $($process.Id)): $($_.Exception.Message)"
-                }
+                return $null
             }
-            # Wait a moment for processes to fully close
-            Start-Sleep -Seconds 3
-        } else {
-            Write-Host "No existing Outlook processes found." -ForegroundColor Green
-        }
-    }
-    catch {
-        Write-Warning "Error checking for Outlook processes: $($_.Exception.Message)"
-    }
-}
-
-# Function to check if Outlook is installed
-function Test-OutlookInstalled {
-    try {
-        Write-Host "Checking Outlook installation..." -ForegroundColor Yellow
-        
-        # First check if Outlook is registered as a COM object
-        $outlookProgId = "Outlook.Application"
-        $outlookType = [Type]::GetTypeFromProgID($outlookProgId)
-        if (-not $outlookType) {
-            Write-Host "Outlook COM object not found in registry." -ForegroundColor Red
-            return $false
+            $ostLoadSuccess = $true
+        } catch {
+            Write-Host "  Standard OST loading failed: $($_.Exception.Message)" -ForegroundColor Yellow
+            Write-Host "  This appears to be an orphaned OST file from a different profile/computer" -ForegroundColor Yellow
         }
         
-        # Create a job to test Outlook with timeout
-        $job = Start-Job -ScriptBlock {
+        # If standard loading failed, try orphaned OST conversion approach
+        if (-not $ostLoadSuccess) {
+            Write-Host "  Attempting orphaned OST conversion..." -ForegroundColor Cyan
+            
+            # Method 1: Try to import OST directly using temporary profile
             try {
-                $outlook = New-Object -ComObject Outlook.Application
-                if ($outlook) {
-                    $outlook.Quit()
-                    [System.Runtime.Interopservices.Marshal]::ReleaseComObject($outlook) | Out-Null
-                    return $true
+                Write-Host "  Creating temporary Outlook session..." -ForegroundColor Cyan
+                
+                # Create a new temporary PST first
+                $tempPSTPath = [System.IO.Path]::ChangeExtension($TargetPST, ".temp.pst")
+                if (Test-Path $tempPSTPath) { Remove-Item $tempPSTPath -Force }
+                
+                # Create PST first
+                $namespace.AddStoreEx($tempPSTPath, 3) # Unicode PST
+                Start-Sleep -Seconds 2
+                
+                # Try to force-add the OST by copying it to a temp location and renaming
+                $tempOSTPath = [System.IO.Path]::ChangeExtension($SourceOST, ".temp.ost")
+                Copy-Item $SourceOST $tempOSTPath -Force
+                
+                try {
+                    # Try adding the copied OST
+                    $namespace.AddStore($tempOSTPath)
+                    Start-Sleep -Seconds 3
+                    
+                    # Look for the OST store
+                    foreach ($store in $namespace.Stores) {
+                        if ($store.FilePath -eq $tempOSTPath) {
+                            try {
+                                $ostStore = $store
+                                $ostLoadSuccess = $true
+                                Write-Host "  Orphaned OST loaded successfully!" -ForegroundColor Green
+                                break
+                            } catch {
+                                Write-Host "    OST found but not accessible: $($_.Exception.Message)" -ForegroundColor Red
+                            }
+                        }
+                    }
+                } finally {
+                    # Clean up temp OST
+                    if (Test-Path $tempOSTPath) {
+                        try { Remove-Item $tempOSTPath -Force } catch { }
+                    }
                 }
-                return $false
-            }
-            catch {
-                return $false
+            } catch {
+                Write-Host "    Temporary profile method failed: $($_.Exception.Message)" -ForegroundColor Red
             }
         }
         
-        # Wait for job completion with timeout (30 seconds)
-        $timeout = 30
-        Write-Host "Testing Outlook COM interface (timeout: $timeout seconds)..." -ForegroundColor Yellow
+        # Final fallback: Use scanpst.exe approach if available
+        if (-not $ostLoadSuccess) {
+            Write-Host "  Trying OST repair and conversion..." -ForegroundColor Cyan
+            
+            # Look for scanpst.exe
+            $scanpstPaths = @(
+                "${env:ProgramFiles}\Microsoft Office\root\Office16\scanpst.exe",
+                "${env:ProgramFiles(x86)}\Microsoft Office\root\Office16\scanpst.exe",
+                "${env:ProgramFiles}\Microsoft Office\Office16\scanpst.exe",
+                "${env:ProgramFiles(x86)}\Microsoft Office\Office16\scanpst.exe",
+                "${env:ProgramFiles}\Microsoft Office\Office15\scanpst.exe",
+                "${env:ProgramFiles(x86)}\Microsoft Office\Office15\scanpst.exe"
+            )
+            
+            $scanpstPath = $null
+            foreach ($path in $scanpstPaths) {
+                if (Test-Path $path) {
+                    $scanpstPath = $path
+                    break
+                }
+            }
+            
+            if ($scanpstPath) {
+                Write-Host "  Found scanpst.exe, attempting repair..." -ForegroundColor Cyan
+                
+                # Create a copy of the OST for repair
+                $repairOSTPath = [System.IO.Path]::ChangeExtension($SourceOST, ".repair.ost")
+                Copy-Item $SourceOST $repairOSTPath -Force
+                
+                try {
+                    # Run scanpst.exe to repair the OST
+                    $process = Start-Process -FilePath $scanpstPath -ArgumentList "`"$repairOSTPath`" -f" -Wait -PassThru -WindowStyle Hidden
+                    
+                    if ($process.ExitCode -eq 0) {
+                        Write-Host "    OST repair completed, retrying load..." -ForegroundColor Green
+                        
+                        # Try to load the repaired OST
+                        try {
+                            $namespace.AddStore($repairOSTPath)
+                            Start-Sleep -Seconds 3
+                            
+                            foreach ($store in $namespace.Stores) {
+                                if ($store.FilePath -eq $repairOSTPath) {
+                                    try {
+                                        $rootFolder = $store.GetRootFolder()
+                                        if ($rootFolder) {
+                                            $ostStore = $store
+                                            $ostLoadSuccess = $true
+                                            Write-Host "    Repaired OST loaded successfully!" -ForegroundColor Green
+                                            break
+                                        }
+                                    } catch { }
+                                }
+                            }
+                        } catch {
+                            Write-Host "    Repaired OST still not accessible: $($_.Exception.Message)" -ForegroundColor Red
+                        }
+                    }
+                } finally {
+                    # Clean up repair file
+                    if (Test-Path $repairOSTPath) {
+                        try { Remove-Item $repairOSTPath -Force } catch { }
+                    }
+                }
+            }
+        }
         
-        if (Wait-Job -Job $job -Timeout $timeout) {
-            $result = Receive-Job -Job $job
-            Remove-Job -Job $job -Force
-            
-            if ($result) {
-                Write-Host "Outlook installation verified." -ForegroundColor Green
-                return $true
-            } else {
-                Write-Host "Outlook COM interface test failed." -ForegroundColor Red
-                return $false
-            }
-        } else {
-            Write-Host "Outlook COM interface test timed out." -ForegroundColor Red
-            Remove-Job -Job $job -Force
-            # Close any Outlook processes that might be hanging
-            Close-OutlookProcesses
-            return $false
+        if (-not $ostLoadSuccess -or -not $ostStore) {
+            throw "Unable to load OST file. This OST may be corrupted, encrypted, or from an incompatible Outlook version. Please try using a specialized OST recovery tool or contact the original user to export the data properly."
         }
-    }
-    catch {
-        Write-Host "Error checking Outlook installation: $($_.Exception.Message)" -ForegroundColor Red
-        return $false
-    }
-}
-
-# Function to get folder item count recursively
-function Get-FolderItemCount {
-    param($folder)
-    $count = $folder.Items.Count
-    foreach ($subfolder in $folder.Folders) {
-        $count += Get-FolderItemCount -folder $subfolder
-    }
-    return $count
-}
-
-# Function to copy folder contents recursively
-function Copy-FolderContents {
-    param(
-        $sourceFolder,
-        $destinationFolder,
-        [ref]$processedItems,
-        $totalItems
-    )
-    
-    # Copy items in current folder
-    $items = $sourceFolder.Items
-    for ($i = 1; $i -le $items.Count; $i++) {
+        
+        Write-Host "`nOST loaded successfully!" -ForegroundColor Green
+        Write-Host "Creating PST file..." -ForegroundColor Yellow
+        
+        # Create PST file using proper Outlook methods
+        $pstCreated = $false
+        
         try {
-            $item = $items.Item($i)
-            $copiedItem = $item.Copy()
-            $copiedItem.Move($destinationFolder)
-            $processedItems.Value++
+            # Method 1: Use AddStoreEx with Unicode PST format
+            Write-Host "  Creating Unicode PST file..." -ForegroundColor Cyan
+            $namespace.AddStoreEx($TargetPST, 3) # 3 = Unicode PST
+            Start-Sleep -Seconds 3
             
-            $percentComplete = [math]::Round(($processedItems.Value / $totalItems) * 100, 2)
-            $currentStatus = "Processing item $($processedItems.Value) of $totalItems - $($item.Subject)"
-            if ($currentStatus.Length -gt 80) {
-                $currentStatus = $currentStatus.Substring(0, 77) + "..."
+            # Verify PST was created and is accessible
+            $pstStore = $null
+            foreach ($store in $namespace.Stores) {
+                if ($store.FilePath -eq $TargetPST) {
+                    try {
+                        $testRoot = $store.GetRootFolder()
+                        if ($testRoot) {
+                            $pstStore = $store
+                            $pstCreated = $true
+                            Write-Host "  PST created and verified!" -ForegroundColor Green
+                            break
+                        }
+                    } catch {
+                        Write-Host "    PST created but not accessible: $($_.Exception.Message)" -ForegroundColor Red
+                    }
+                }
             }
-            Write-Progress -Activity "Converting OST to PST" -Status $currentStatus -PercentComplete $percentComplete -CurrentOperation "Copying items from folder: $($sourceFolder.Name)"
+        } catch {
+            Write-Host "    Unicode PST creation failed: $($_.Exception.Message)" -ForegroundColor Red
         }
-        catch {
-            Write-Warning "Failed to copy item: $($_.Exception.Message)"
+        
+        # Method 2: Fallback to ANSI PST if Unicode failed
+        if (-not $pstCreated) {
+            try {
+                Write-Host "  Trying ANSI PST format..." -ForegroundColor Cyan
+                # Remove failed file
+                if (Test-Path $TargetPST) { Remove-Item $TargetPST -Force }
+                
+                $namespace.AddStoreEx($TargetPST, [Microsoft.Office.Interop.Outlook.OlStoreType]::olStoreANSI)
+                Start-Sleep -Seconds 3
+                
+                foreach ($store in $namespace.Stores) {
+                    if ($store.FilePath -eq $TargetPST) {
+                        try {
+                            $testRoot = $store.GetRootFolder()
+                            if ($testRoot) {
+                                $pstStore = $store
+                                $pstCreated = $true
+                                Write-Host "  ANSI PST created and verified!" -ForegroundColor Green
+                                break
+                            }
+                        } catch {
+                            Write-Host "    ANSI PST created but not accessible: $($_.Exception.Message)" -ForegroundColor Red
+                        }
+                    }
+                }
+            } catch {
+                Write-Host "    ANSI PST creation failed: $($_.Exception.Message)" -ForegroundColor Red
+            }
         }
-    }
-    
-    # Process subfolders recursively
-    foreach ($subfolder in $sourceFolder.Folders) {
+        
+        # Method 3: Final fallback using default store creation
+        if (-not $pstCreated) {
+            try {
+                Write-Host "  Trying default PST creation..." -ForegroundColor Cyan
+                # Remove failed file
+                if (Test-Path $TargetPST) { Remove-Item $TargetPST -Force }
+                
+                # Create empty PST and add it
+                $namespace.AddStore($TargetPST)
+                Start-Sleep -Seconds 5
+                
+                foreach ($store in $namespace.Stores) {
+                    if ($store.FilePath -eq $TargetPST) {
+                        try {
+                            $testRoot = $store.GetRootFolder()
+                            if ($testRoot) {
+                                $pstStore = $store
+                                $pstCreated = $true
+                                Write-Host "  Default PST created and verified!" -ForegroundColor Green
+                                break
+                            }
+                        } catch {
+                            Write-Host "    Default PST not accessible: $($_.Exception.Message)" -ForegroundColor Red
+                        }
+                    }
+                }
+            } catch {
+                Write-Host "    Default PST creation failed: $($_.Exception.Message)" -ForegroundColor Red
+            }
+        }
+        
+        if (-not $pstCreated -or -not $pstStore) {
+            throw "Failed to create accessible PST file. Please ensure Outlook is properly installed and you have write permissions to the target directory."
+        }
+        
+        Write-Host "PST created successfully!" -ForegroundColor Green
+        
+        # Get root folders
+        $ostRoot = $ostStore.GetRootFolder()
+        $pstRoot = $pstStore.GetRootFolder()
+        
+        Write-Host "`nStarting data copy..." -ForegroundColor Yellow
+        
+        # Simple recursive copy function
+        function Copy-FolderRecursive {
+            param($sourceFolder, $destFolder, [ref]$itemCount)
+            
+            Write-Host "Processing: $($sourceFolder.Name)" -ForegroundColor Cyan
+            
+            # Copy all items in current folder
+            $items = $sourceFolder.Items
+            for ($i = 1; $i -le $items.Count; $i++) {
+                try {
+                    $item = $items.Item($i)
+                    $item.Copy().Move($destFolder)
+                    $itemCount.Value++
+                    
+                    if ($itemCount.Value % 50 -eq 0) {
+                        Write-Host "  Copied $($itemCount.Value) items..." -ForegroundColor Gray
+                    }
+                } catch {
+                    Write-Host "    Failed to copy item: $($_.Exception.Message)" -ForegroundColor Red
+                }
+            }
+            
+            # Process subfolders
+            foreach ($subfolder in $sourceFolder.Folders) {
+                try {
+                    $newFolder = $destFolder.Folders.Add($subfolder.Name)
+                    Copy-FolderRecursive -sourceFolder $subfolder -destFolder $newFolder -itemCount $itemCount
+                } catch {
+                    Write-Host "    Failed to process folder '$($subfolder.Name)': $($_.Exception.Message)" -ForegroundColor Red
+                }
+            }
+        }
+        
+        # Start copying
+        $copiedItems = [ref]0
+        Copy-FolderRecursive -sourceFolder $ostRoot -destFolder $pstRoot -itemCount $copiedItems
+        
+        Write-Host "`n=== Conversion Complete ===" -ForegroundColor Green
+        Write-Host "Items copied: $($copiedItems.Value)" -ForegroundColor Cyan
+        Write-Host "PST file: $TargetPST" -ForegroundColor Cyan
+        
+    } catch {
+        Write-Host "`nConversion failed: $($_.Exception.Message)" -ForegroundColor Red
+        throw
+    } finally {
+        # Cleanup
+        Write-Host "`nCleaning up..." -ForegroundColor Yellow
+        
         try {
-            $newFolder = $destinationFolder.Folders.Add($subfolder.Name, $subfolder.DefaultItemType)
-            Copy-FolderContents -sourceFolder $subfolder -destinationFolder $newFolder -processedItems $processedItems -totalItems $totalItems
+            if ($ostStore) { $namespace.RemoveStore($ostStore.GetRootFolder()) }
+        } catch { }
+        
+        if ($namespace) {
+            [System.Runtime.Interopservices.Marshal]::ReleaseComObject($namespace) | Out-Null
         }
-        catch {
-            Write-Warning "Failed to process folder '$($subfolder.Name)': $($_.Exception.Message)"
+        if ($outlook) {
+            $outlook.Quit()
+            [System.Runtime.Interopservices.Marshal]::ReleaseComObject($outlook) | Out-Null
         }
+        
+        [System.GC]::Collect()
+        [System.GC]::WaitForPendingFinalizers()
+        
+        # Final cleanup of any remaining processes
+        Stop-OutlookProcesses
     }
 }
 
-# Main script execution
+# Main execution
 try {
-    Write-Host "OST to PST Converter" -ForegroundColor Green
-    Write-Host "===================" -ForegroundColor Green
-    
-    # Phase 1: Initial setup
-    Write-Progress -Activity "OST to PST Conversion" -Status "Initializing..." -PercentComplete 0
-    
-    # Close any existing Outlook processes first
-    Close-OutlookProcesses
-    
-    # Check if Outlook is installed
-    Write-Progress -Activity "OST to PST Conversion" -Status "Checking Outlook installation..." -PercentComplete 5
-    if (-not (Test-OutlookInstalled)) {
-        throw "Microsoft Outlook is not installed or not accessible via COM interface."
-    }
-    
-    # Get OST file path if not provided
+    # Get file paths if not provided
     if (-not $OSTPath) {
         do {
-            $OSTPath = Read-Host "Enter the path to the OST file"
-            # Clean up the path - remove surrounding quotes if present
-            $OSTPath = $OSTPath.Trim('"').Trim("'").Trim()
-            
-            Write-Host "Testing path: '$OSTPath'" -ForegroundColor Cyan
-            
+            $OSTPath = Read-Host "Enter OST file path"
+            $OSTPath = $OSTPath.Trim('"').Trim("'")
             if (-not (Test-Path $OSTPath)) {
-                Write-Host "File not found. Please enter a valid path." -ForegroundColor Red
-                Write-Host "Make sure the file exists and you have access to it." -ForegroundColor Yellow
-                $OSTPath = $null
-            }
-            elseif (-not $OSTPath.EndsWith('.ost', [System.StringComparison]::OrdinalIgnoreCase)) {
-                Write-Host "Please specify a valid OST file (must have .ost extension)." -ForegroundColor Red
+                Write-Host "File not found!" -ForegroundColor Red
                 $OSTPath = $null
             }
         } while (-not $OSTPath)
     }
-    else {
-        # Clean up the provided path
-        $OSTPath = $OSTPath.Trim('"').Trim("'").Trim()
-        Write-Host "Using provided OST path: '$OSTPath'" -ForegroundColor Cyan
-    }
     
-    # Validate OST file exists
-    if (-not (Test-Path $OSTPath)) {
-        Write-Host "Tested path: '$OSTPath'" -ForegroundColor Red
-        throw "OST file not found: $OSTPath"
-    }
-    
-    # Validate it's an OST file
-    if (-not $OSTPath.EndsWith('.ost', [System.StringComparison]::OrdinalIgnoreCase)) {
-        throw "Invalid file type. Please specify an OST file."
-    }
-    
-    # Get PST file path if not provided
     if (-not $PSTPath) {
-        $defaultPSTPath = [System.IO.Path]::ChangeExtension($OSTPath, ".pst")
-        $PSTPath = Read-Host "Enter the path for the output PST file (default: $defaultPSTPath)"
-        if ([string]::IsNullOrWhiteSpace($PSTPath)) {
-            $PSTPath = $defaultPSTPath
-        }
+        $PSTPath = [System.IO.Path]::ChangeExtension($OSTPath, ".pst")
+        $response = Read-Host "Output PST path (default: $PSTPath)"
+        if ($response) { $PSTPath = $response.Trim('"').Trim("'") }
     }
     
-    # Check if PST file already exists
+    # Check for overwrite
     if (Test-Path $PSTPath) {
-        $overwrite = Read-Host "PST file already exists. Overwrite? (y/n)"
+        $overwrite = Read-Host "PST exists. Overwrite? (y/n)"
         if ($overwrite -ne 'y') {
-            Write-Host "Operation cancelled." -ForegroundColor Yellow
+            Write-Host "Cancelled." -ForegroundColor Yellow
             exit
         }
-        Remove-Item $PSTPath -Force
     }
     
-    Write-Host "Starting conversion..." -ForegroundColor Yellow
-    Write-Host "Source OST: $OSTPath" -ForegroundColor Cyan
-    Write-Host "Target PST: $PSTPath" -ForegroundColor Cyan
+    # Run conversion
+    Convert-OSTToPST -SourceOST $OSTPath -TargetPST $PSTPath
     
-    # Phase 3: Initialize Outlook
-    Write-Progress -Activity "OST to PST Conversion" -Status "Initializing Outlook COM interface..." -PercentComplete 20
+    Write-Host "`nConversion successful!" -ForegroundColor Green
     
-    # Create Outlook application object
-    $outlook = New-Object -ComObject Outlook.Application
-    $namespace = $outlook.GetNamespace("MAPI")
-    
-    # Phase 4: Loading OST file
-    Write-Progress -Activity "OST to PST Conversion" -Status "Loading OST file..." -PercentComplete 25
-    Write-Host "Adding OST file to Outlook profile..." -ForegroundColor Yellow
-    $namespace.AddStore($OSTPath)
-    
-    # Wait for store to be available with progress indication
-    for ($i = 1; $i -le 3; $i++) {
-        Write-Progress -Activity "OST to PST Conversion" -Status "Waiting for OST file to load... ($i/3)" -PercentComplete (25 + ($i * 2))
-        Start-Sleep -Seconds 1
-    }
-    
-    # Find the added store
-    $ostStore = $null
-    foreach ($store in $namespace.Stores) {
-        if ($store.FilePath -eq $OSTPath) {
-            $ostStore = $store
-            break
-        }
-    }
-    
-    if (-not $ostStore) {
-        throw "Could not access OST file. Make sure the file is not corrupted and not currently in use."
-    }
-    
-    # Phase 5: Creating PST file
-    Write-Progress -Activity "OST to PST Conversion" -Status "Creating PST file..." -PercentComplete 35
-    Write-Host "Creating PST file..." -ForegroundColor Yellow
-    $namespace.AddStore($PSTPath)
-    
-    # Wait for PST to be created with progress indication
-    for ($i = 1; $i -le 2; $i++) {
-        Write-Progress -Activity "OST to PST Conversion" -Status "Waiting for PST file creation... ($i/2)" -PercentComplete (35 + ($i * 2))
-        Start-Sleep -Seconds 1
-    }
-    
-    # Find the PST store
-    $pstStore = $null
-    foreach ($store in $namespace.Stores) {
-        if ($store.FilePath -eq $PSTPath) {
-            $pstStore = $store
-            break
-        }
-    }
-    
-    if (-not $pstStore) {
-        throw "Could not create PST file."
-    }
-    
-    # Phase 6: Analyzing data structure
-    Write-Progress -Activity "OST to PST Conversion" -Status "Analyzing data structure..." -PercentComplete 40
-    
-    # Get root folders
-    $ostRootFolder = $ostStore.GetRootFolder()
-    $pstRootFolder = $pstStore.GetRootFolder()
-    
-    # Calculate total items for progress tracking
-    Write-Host "Calculating total items..." -ForegroundColor Yellow
-    $totalItems = Get-FolderItemCount -folder $ostRootFolder
-    Write-Host "Total items to process: $totalItems" -ForegroundColor Cyan
-    
-    # Phase 7: Data conversion (45% to 95%)
-    Write-Progress -Activity "OST to PST Conversion" -Status "Starting data conversion..." -PercentComplete 45
-    
-    # Copy all folders and items
-    $processedItems = [ref]0
-    Copy-FolderContents -sourceFolder $ostRootFolder -destinationFolder $pstRootFolder -processedItems $processedItems -totalItems $totalItems
-    
-    # Phase 8: Cleanup
-    Write-Progress -Activity "OST to PST Conversion" -Status "Finalizing conversion..." -PercentComplete 95
-    
-    # Remove OST from profile
-    $namespace.RemoveStore($ostRootFolder)
-    
-    Write-Progress -Activity "OST to PST Conversion" -Status "Conversion completed!" -PercentComplete 100
-    Start-Sleep -Seconds 1
-    Write-Progress -Activity "OST to PST Conversion" -Completed
-    
-    Write-Host "Conversion completed successfully!" -ForegroundColor Green
-    Write-Host "PST file created: $PSTPath" -ForegroundColor Green
-    Write-Host "Total items processed: $($processedItems.Value)" -ForegroundColor Cyan
+} catch {
+    Write-Host "`nError: $($_.Exception.Message)" -ForegroundColor Red
+    exit 1
 }
-catch {
-    Write-Progress -Activity "OST to PST Conversion" -Completed
-    Write-Host "Error: $($_.Exception.Message)" -ForegroundColor Red
-    Write-Host "Stack Trace: $($_.ScriptStackTrace)" -ForegroundColor Red
-}
-finally {
-    # Cleanup COM objects
-    if ($namespace) {
-        [System.Runtime.Interopservices.Marshal]::ReleaseComObject($namespace) | Out-Null
-    }
-    if ($outlook) {
-        $outlook.Quit()
-        [System.Runtime.Interopservices.Marshal]::ReleaseComObject($outlook) | Out-Null
-    }
-    
-    # Force garbage collection
-    [System.GC]::Collect()
-    [System.GC]::WaitForPendingFinalizers()
-}
-
-Write-Host "Script execution completed." -ForegroundColor Green
