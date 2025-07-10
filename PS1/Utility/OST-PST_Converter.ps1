@@ -1,21 +1,3 @@
-<#
-.SYNOPSIS
-    Simple OST to PST Converter
-
-.DESCRIPTION
-    Converts any OST file to PST format using Outlook COM interface.
-    Simplified approach that just gets the job done.
-
-.PARAMETER OSTPath
-    Path to the OST file to convert
-
-.PARAMETER PSTPath
-    Path for the output PST file
-
-.EXAMPLE
-    .\OST-PST_Converter.ps1 -OSTPath "C:\path\to\file.ost" -PSTPath "C:\path\to\output.pst"
-#>
-
 param(
     [string]$OSTPath,
     [string]$PSTPath
