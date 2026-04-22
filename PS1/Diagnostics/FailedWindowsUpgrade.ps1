@@ -18,10 +18,10 @@ function Show-Menu {
     Write-Host "  Identify why your Windows 11 upgrade from 24H2 to 25H2 is failing.`n" -ForegroundColor White
     
     Write-Host "  [1]  Deep Scan" -ForegroundColor Green
-    Write-Host "       Comprehensive scan of drivers, services, apps, and compatibility"`n -ForegroundColor DarkGray
+    Write-Host "       Comprehensive scan of drivers, services, apps, and compatibility`n" -ForegroundColor DarkGray
     
     Write-Host "  [2]  Diagnose Setup" -ForegroundColor Yellow
-    Write-Host "       Analyze setup logs and configuration for upgrade blockers"`n -ForegroundColor DarkGray
+    Write-Host "       Analyze setup logs and configuration for upgrade blockers`n" -ForegroundColor DarkGray
     
     Write-Host "  [3]  Exit" -ForegroundColor Red
     Write-Host "       Exit the diagnostic tool" -ForegroundColor DarkGray
@@ -85,7 +85,7 @@ function Check-DiskSpace {
         Write-Host "WARNING: Less than 20GB free space. Windows 11 25H2 upgrade requires at least 20GB, but 40GB+ is recommended." -ForegroundColor Yellow
     }
     elseif ($freeSpaceGB -lt 40) {
-        Write-Host "ADVISORY: $freeSpaceGB GB free — upgrade may succeed, but 40GB+ is recommended for Windows 11 25H2." -ForegroundColor DarkYellow
+        Write-Host "ADVISORY: $freeSpaceGB GB free - upgrade may succeed, but 40GB+ is recommended for Windows 11 25H2." -ForegroundColor DarkYellow
     }
 }
 
@@ -243,45 +243,46 @@ function Get-CurrentWindowsVersion {
     
     # Verify the system is on 24H2 before attempting 25H2 upgrade
     if ($displayVersion -eq "24H2") {
-        Write-Host "`nConfirmed: Running Windows 11 24H2 — eligible for 25H2 upgrade." -ForegroundColor Green
+        Write-Host "`nConfirmed: Running Windows 11 24H2 - eligible for 25H2 upgrade." -ForegroundColor Green
     }
     else {
         Write-Host "`nNOTE: This tool is designed for 24H2 -> 25H2 upgrades." -ForegroundColor Yellow
-        Write-Host "Detected version: $displayVersion — results may not fully apply." -ForegroundColor Yellow
+        Write-Host "Detected version: $displayVersion - results may not fully apply." -ForegroundColor Yellow
     }
 }
 
 function Get-UpdateBlockerRecommendations {
     Write-LogSection "Specific Recommendations Based on Analysis"
     
-    Write-Host @"
-Based on the analysis of your ScanResult.xml, your PC has a driver or service 
-that isn't ready for Windows 11 25H2. Here are specific steps to resolve this issue:
-
-1. UPDATE DRIVERS:
-   - Visit your PC manufacturer's website to download the latest drivers
-   - Or use Windows Update to check for driver updates
-   - Focus particularly on display/graphics, network, and storage drivers
-
-2. CHECK FOR CONFLICTING SOFTWARE:
-   - Temporarily disable or uninstall security software (antivirus, firewall)
-   - Disable any VPN software
-   - Remove any system optimization or cleaning tools
-
-3. PREPARE FOR UPGRADE:
-   - Backup your important data
-   - Disconnect unnecessary peripherals (printers, external drives, etc.)
-   - Ensure you have at least 20GB of free space
-   - Connect to a reliable power source
-
-4. ALTERNATIVE UPGRADE METHODS:
-   - Try using the Media Creation Tool to perform an in-place upgrade
-   - Create bootable media and perform a clean installation (saving your files)
-
-5. MICROSOFT WORKAROUNDS:
-   - Check the Microsoft Known Issues page for Windows 11 25H2 for possible workarounds
-   - Visit https://aka.ms/WindowsReleaseHealth for the latest Windows 11 release health dashboard
-"@ -ForegroundColor White
+    $recommendations = @(
+        'Based on the analysis of your ScanResult.xml, your PC has a driver or service',
+        'that isn''t ready for Windows 11 25H2. Here are specific steps to resolve this issue:',
+        '',
+        '1. UPDATE DRIVERS:',
+        '   - Visit your PC manufacturer''s website to download the latest drivers',
+        '   - Or use Windows Update to check for driver updates',
+        '   - Focus particularly on display/graphics, network, and storage drivers',
+        '',
+        '2. CHECK FOR CONFLICTING SOFTWARE:',
+        '   - Temporarily disable or uninstall security software (antivirus, firewall)',
+        '   - Disable any VPN software',
+        '   - Remove any system optimization or cleaning tools',
+        '',
+        '3. PREPARE FOR UPGRADE:',
+        '   - Backup your important data',
+        '   - Disconnect unnecessary peripherals (printers, external drives, etc.)',
+        '   - Ensure you have at least 20GB of free space',
+        '   - Connect to a reliable power source',
+        '',
+        '4. ALTERNATIVE UPGRADE METHODS:',
+        '   - Try using the Media Creation Tool to perform an in-place upgrade',
+        '   - Create bootable media and perform a clean installation (saving your files)',
+        '',
+        '5. MICROSOFT WORKAROUNDS:',
+        '   - Check the Microsoft Known Issues page for Windows 11 25H2 for possible workarounds',
+        '   - Visit https://aka.ms/WindowsReleaseHealth for the latest Windows 11 release health dashboard'
+    )
+    $recommendations | ForEach-Object { Write-Host $_ -ForegroundColor White }
 }
 
 function Process-ScanResultXML {
@@ -619,7 +620,7 @@ function Perform-DeepApplicationScan {
         @{Name = "Antivirus"; Pattern = "Norton|McAfee|Kaspersky|Avast|AVG|Bitdefender|ESET|Trend Micro|Webroot|F-Secure|Sophos"; Reason = "Security software can block Windows system file modifications during upgrade." },
         @{Name = "Disk Encryption"; Pattern = "BitLocker|VeraCrypt|DiskCryptor|TrueCrypt|PGP|Symantec Encryption"; Reason = "Disk encryption can prevent Windows from accessing required drive sectors during upgrade." },
         @{Name = "System Utilities"; Pattern = "CCleaner|Advanced SystemCare|System Mechanic|Wise|TuneUp|Glary|PC Cleaner|Driver Booster"; Reason = "System optimization tools can modify Windows settings that interfere with upgrades." },
-        @{Name = "Legacy Software"; Pattern = "2000|2003|XP|Vista|7|2008"; Reason = "Very old software may use deprecated APIs or services not compatible with Windows 11." },
+        @{Name = 'Legacy Software'; Pattern = '2000|2003|XP|Vista|7|2008'; Reason = 'Very old software may use deprecated APIs or services not compatible with Windows 11.' },
         @{Name = "Virtualization"; Pattern = "VMware|VirtualBox|Hyper-V|Virtual PC|Parallels|QEMU|Xen"; Reason = "Virtualization software uses low-level system drivers that might be incompatible." },
         @{Name = "Audio/Video"; Pattern = "ASIO|Realtek HD|Sound Blaster|NVIDIA HD Audio|AMD High Definition|Dolby|Conexant"; Reason = "Audio drivers can be problematic for Windows 11 upgrades." },
         @{Name = "Remote Access"; Pattern = "TeamViewer|AnyDesk|Remote Desktop|LogMeIn|Chrome Remote|UltraVNC|RealVNC|TightVNC"; Reason = "Remote access tools insert hooks into Windows that might interfere with upgrades." },
@@ -795,7 +796,7 @@ function Analyze-ServicesCompatibility {
     Write-Host "2. Ensure all Microsoft update services are running" -ForegroundColor White
     Write-Host "3. Try performing the upgrade in Safe Mode with Networking if service issues persist" -ForegroundColor White
     Write-Host "4. Run this command before upgrading to reset Windows Update components:" -ForegroundColor White
-    Write-Host "   net stop wuauserv && net stop bits && net stop cryptsvc && ren %systemroot%\SoftwareDistribution SoftwareDistribution.old && net start cryptsvc && net start bits && net start wuauserv" -ForegroundColor DarkGray
+    Write-Host '   net stop wuauserv && net stop bits && net stop cryptsvc && ren %systemroot%\SoftwareDistribution SoftwareDistribution.old && net start cryptsvc && net start bits && net start wuauserv' -ForegroundColor DarkGray
 }
 
 function Export-DiagnosticReport {
@@ -821,57 +822,61 @@ function Export-DiagnosticReport {
         }
     }
     
-    # Create HTML header
-    $htmlHeader = @"
-<!DOCTYPE html>
-<html>
-<head>
-    <title>Windows 11 Upgrade Diagnostic Report</title>
-    <style>
-        body { font-family: Arial, sans-serif; margin: 20px; }
-        h1 { color: #0078d4; }
-        h2 { color: #0078d4; margin-top: 20px; border-bottom: 1px solid #ddd; padding-bottom: 5px; }
-        .error { color: #c00; }
-        .warning { color: #c50; }
-        .success { color: #080; }
-        .info { color: #555; }
-        .section { margin: 10px 0; padding: 10px; background: #f8f8f8; border-left: 4px solid #0078d4; }
-        .recommendation { margin: 10px 0; padding: 10px; background: #e6f0ff; border-left: 4px solid #0078d4; }
-    </style>
-</head>
-<body>
-    <h1>Windows 11 Upgrade Diagnostic Report</h1>
-    <p>Generated on $(Get-Date -Format "yyyy-MM-dd HH:mm:ss")</p>
-"@
+    # Build the HTML as simple string arrays to keep it parser-safe in Windows PowerShell 5.1.
+    $htmlHeader = @(
+        '<!DOCTYPE html>',
+        '<html>',
+        '<head>',
+        '    <title>Windows 11 Upgrade Diagnostic Report</title>',
+        '    <style>',
+        '        body { font-family: Arial, sans-serif; margin: 20px; }',
+        '        h1 { color: #0078d4; }',
+        '        h2 { color: #0078d4; margin-top: 20px; border-bottom: 1px solid #ddd; padding-bottom: 5px; }',
+        '        .error { color: #c00; }',
+        '        .warning { color: #c50; }',
+        '        .success { color: #080; }',
+        '        .info { color: #555; }',
+        '        .section { margin: 10px 0; padding: 10px; background: #f8f8f8; border-left: 4px solid #0078d4; }',
+        '        .recommendation { margin: 10px 0; padding: 10px; background: #e6f0ff; border-left: 4px solid #0078d4; }',
+        '    </style>',
+        '</head>',
+        '<body>',
+        '    <h1>Windows 11 Upgrade Diagnostic Report</h1>',
+        ('    <p>Generated on {0}</p>' -f (Get-Date -Format 'yyyy-MM-dd HH:mm:ss'))
+    ) -join [Environment]::NewLine
     
     # Create HTML content sections (these would be populated by capturing output from various functions)
-    $htmlContent = "<div class='section'><h2>System Information</h2>"
-    $htmlContent += "<p>This report identifies potential issues preventing your Windows 11 24H2 to 25H2 upgrade.</p>"
-    $htmlContent += "</div>"
+    $htmlContent = @(
+        "<div class='section'><h2>System Information</h2>",
+        '<p>This report identifies potential issues preventing your Windows 11 24H2 to 25H2 upgrade.</p>',
+        '</div>'
+    ) -join [Environment]::NewLine
     
     # Create recommendations section
-    $htmlRecommendations = "<div class='recommendation'><h2>Recommendations</h2>"
-    $htmlRecommendations += "<p class='warning'>Your PC has a driver or service that isn't ready for Windows 11 25H2.</p>"
-    $htmlRecommendations += "<ul>"
-    $htmlRecommendations += "<li>Update all drivers, especially graphics, network, and storage drivers</li>"
-    $htmlRecommendations += "<li>Temporarily disable security software during the upgrade</li>"
-    $htmlRecommendations += "<li>Disconnect non-essential peripherals before upgrading</li>"
-    $htmlRecommendations += "<li>Try the Media Creation Tool instead of Windows Update</li>"
-    $htmlRecommendations += "</ul>"
-    $htmlRecommendations += "</div>"
+    $htmlRecommendations = @(
+        "<div class='recommendation'><h2>Recommendations</h2>",
+        "<p class='warning'>Your PC has a driver or service that isn't ready for Windows 11 25H2.</p>",
+        '<ul>',
+        '<li>Update all drivers, especially graphics, network, and storage drivers</li>',
+        '<li>Temporarily disable security software during the upgrade</li>',
+        '<li>Disconnect non-essential peripherals before upgrading</li>',
+        '<li>Try the Media Creation Tool instead of Windows Update</li>',
+        '</ul>',
+        '</div>'
+    ) -join [Environment]::NewLine
     
     # Create HTML footer
-    $htmlFooter = @"
-    <p style="margin-top:30px; font-size:12px; color:#777;">
-    This report was generated by the Windows 11 Upgrade Diagnostic Tool.<br>
-    For more information, visit <a href="https://go.microsoft.com/fwlink/?LinkId=2280120">Microsoft's Windows 11 Compatibility page</a>.
-    </p>
-</body>
-</html>
-"@
+    $htmlFooter = @(
+        "    <p style='margin-top:30px; font-size:12px; color:#777;'>",
+        "    This report was generated by the Windows 11 Upgrade Diagnostic Tool.<br>",
+        "    For more information, visit <a href='https://go.microsoft.com/fwlink/?LinkId=2280120'>the Microsoft Windows 11 Compatibility page</a>.",
+        "    </p>",
+        "</body>",
+        "</html>"
+    ) -join [Environment]::NewLine
     
     # Combine all HTML elements
-    $htmlReport = $htmlHeader + $htmlContent + $htmlRecommendations + $htmlFooter
+    $htmlReport = @($htmlHeader, $htmlContent, $htmlRecommendations, $htmlFooter) -join [Environment]::NewLine
     
     # Write HTML to file
     try {
