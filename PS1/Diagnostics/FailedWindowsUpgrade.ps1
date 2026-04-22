@@ -2,36 +2,43 @@
 function Write-LogSection {
     param ([string]$Title)
     
-    Write-Host "`n==================== $Title ====================" -ForegroundColor Cyan
+    $line = "-" * 62
+    Write-Host "`n$line" -ForegroundColor DarkCyan
+    Write-Host "  >> $Title" -ForegroundColor Cyan
+    Write-Host "$line" -ForegroundColor DarkCyan
 }
 
 function Show-Menu {
     Clear-Host
-    Write-Host "==================== Windows 11 Upgrade Diagnostic Tool ====================" -ForegroundColor Cyan
-    Write-Host "This tool will help diagnose why your Windows 11 upgrade from 23H2 to 24H2 is failing.`n" -ForegroundColor White
+    $border = "=" * 72
+    Write-Host $border -ForegroundColor Cyan
+    Write-Host "  Windows 11 Upgrade Diagnostic Tool" -ForegroundColor Cyan
+    Write-Host "  24H2  ->  25H2  |  $(Get-Date -Format 'yyyy-MM-dd HH:mm')" -ForegroundColor DarkCyan
+    Write-Host $border -ForegroundColor Cyan
+    Write-Host "  Identify why your Windows 11 upgrade from 24H2 to 25H2 is failing.`n" -ForegroundColor White
     
-    Write-Host "1: Deep Scan" -ForegroundColor Green
-    Write-Host "   Perform a comprehensive scan of drivers, services, applications, and system compatibility"
+    Write-Host "  [1]  Deep Scan" -ForegroundColor Green
+    Write-Host "       Comprehensive scan of drivers, services, apps, and compatibility"`n -ForegroundColor DarkGray
     
-    Write-Host "`n2: Diagnose Setup" -ForegroundColor Yellow
-    Write-Host "   Analyze setup logs and configuration for upgrade blockers"
+    Write-Host "  [2]  Diagnose Setup" -ForegroundColor Yellow
+    Write-Host "       Analyze setup logs and configuration for upgrade blockers"`n -ForegroundColor DarkGray
     
-    Write-Host "`n3: Exit" -ForegroundColor Red
-    Write-Host "   Exit the diagnostic tool"
+    Write-Host "  [3]  Exit" -ForegroundColor Red
+    Write-Host "       Exit the diagnostic tool" -ForegroundColor DarkGray
     
-    Write-Host "`n=================================="
+    Write-Host "`n$border" -ForegroundColor Cyan
 }
 
-# Basic diagnostic functions (from original script)
+# Basic diagnostic functions
 function Test-SystemRequirements {
     Write-LogSection "System Requirements Check"
     
     # Check CPU compatibility
-    $processor = Get-WmiObject -Class Win32_Processor
+    $processor = Get-CimInstance -ClassName Win32_Processor
     Write-Host "CPU: $($processor.Name)"
     
     # Check RAM
-    $totalMemoryInGB = [math]::Round((Get-WmiObject -Class Win32_ComputerSystem).TotalPhysicalMemory / 1GB, 2)
+    $totalMemoryInGB = [math]::Round((Get-CimInstance -ClassName Win32_ComputerSystem).TotalPhysicalMemory / 1GB, 2)
     Write-Host "RAM: $totalMemoryInGB GB"
     if ($totalMemoryInGB -lt 4) {
         Write-Host "WARNING: Windows 11 requires at least 4 GB RAM" -ForegroundColor Yellow
@@ -39,7 +46,7 @@ function Test-SystemRequirements {
     
     # Check TPM version
     try {
-        $tpm = Get-WmiObject -Namespace "root\CIMV2\Security\MicrosoftTpm" -Class Win32_Tpm -ErrorAction Stop
+        $tpm = Get-CimInstance -Namespace "root\CIMV2\Security\MicrosoftTpm" -ClassName Win32_Tpm -ErrorAction Stop
         Write-Host "TPM Available: Yes"
         Write-Host "TPM Version: $($tpm.ManufacturerVersion)"
         if ([version]$tpm.ManufacturerVersion -lt [version]"2.0") {
@@ -68,14 +75,17 @@ function Check-DiskSpace {
     
     # Get system drive
     $systemDrive = $env:SystemDrive
-    $drive = Get-WmiObject -Class Win32_LogicalDisk -Filter "DeviceID='$systemDrive'"
+    $drive = Get-CimInstance -ClassName Win32_LogicalDisk -Filter "DeviceID='$systemDrive'"
     $freeSpaceGB = [math]::Round($drive.FreeSpace / 1GB, 2)
     
     Write-Host "System Drive: $systemDrive"
     Write-Host "Free Space: $freeSpaceGB GB"
     
     if ($freeSpaceGB -lt 20) {
-        Write-Host "WARNING: Less than 20GB free space available. Windows upgrades typically require at least 20GB free space." -ForegroundColor Yellow
+        Write-Host "WARNING: Less than 20GB free space. Windows 11 25H2 upgrade requires at least 20GB, but 40GB+ is recommended." -ForegroundColor Yellow
+    }
+    elseif ($freeSpaceGB -lt 40) {
+        Write-Host "ADVISORY: $freeSpaceGB GB free — upgrade may succeed, but 40GB+ is recommended for Windows 11 25H2." -ForegroundColor DarkYellow
     }
 }
 
@@ -161,17 +171,24 @@ function Check-IncompatibleSoftware {
         "Avast", "AVG", "Bitdefender", "Cisco", "VirtualBox", "VMware", "Hyper-V"
     )
     
-    $installedSoftware = Get-WmiObject -Class Win32_Product | Select-Object Name, Vendor
+    # Registry-based scan is faster and safer than Win32_Product (which triggers MSI repair on every product)
+    $registryPaths = @(
+        "HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall\*",
+        "HKLM:\Software\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*"
+    )
+    $installedSoftware = $registryPaths | ForEach-Object {
+        Get-ItemProperty $_ -ErrorAction SilentlyContinue
+    } | Where-Object { $_.DisplayName } | Select-Object DisplayName, Publisher
     
     $matches = $installedSoftware | Where-Object { 
         $software = $_
-        ($potentialBlockers | ForEach-Object { $software.Name -match $_ }) -contains $true
+        ($potentialBlockers | ForEach-Object { $software.DisplayName -match $_ }) -contains $true
     }
     
     if ($matches) {
         Write-Host "Found potentially incompatible software that might interfere with Windows upgrades:" -ForegroundColor Yellow
         $matches | ForEach-Object {
-            Write-Host "  $($_.Name) - $($_.Vendor)" -ForegroundColor DarkYellow
+            Write-Host "  $($_.DisplayName) - $($_.Publisher)" -ForegroundColor DarkYellow
         }
         Write-Host "`nConsider temporarily disabling or uninstalling these applications before upgrading." -ForegroundColor Yellow
     }
@@ -212,15 +229,26 @@ function Check-WindowsServicesStatus {
 function Get-CurrentWindowsVersion {
     Write-LogSection "Current Windows Version"
     
+    $osInfo = Get-CimInstance -ClassName Win32_OperatingSystem
     $currentBuild = Get-ItemProperty "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion"
-    $releaseId = $currentBuild.ReleaseId
-    if (-not $releaseId) {
-        $releaseId = $currentBuild.DisplayVersion
+    $displayVersion = $currentBuild.DisplayVersion
+    if (-not $displayVersion) {
+        $displayVersion = $currentBuild.ReleaseId
     }
     
-    Write-Host "Windows Edition: $(Get-WindowsEdition -Online | Select-Object -ExpandProperty Edition)"
-    Write-Host "Version: $releaseId"
+    Write-Host "Windows Edition: $($osInfo.Caption)"
+    Write-Host "Version: $displayVersion"
     Write-Host "OS Build: $($currentBuild.CurrentBuild).$($currentBuild.UBR)"
+    Write-Host "Install Date: $($osInfo.InstallDate.ToString('yyyy-MM-dd'))"
+    
+    # Verify the system is on 24H2 before attempting 25H2 upgrade
+    if ($displayVersion -eq "24H2") {
+        Write-Host "`nConfirmed: Running Windows 11 24H2 — eligible for 25H2 upgrade." -ForegroundColor Green
+    }
+    else {
+        Write-Host "`nNOTE: This tool is designed for 24H2 -> 25H2 upgrades." -ForegroundColor Yellow
+        Write-Host "Detected version: $displayVersion — results may not fully apply." -ForegroundColor Yellow
+    }
 }
 
 function Get-UpdateBlockerRecommendations {
@@ -228,7 +256,7 @@ function Get-UpdateBlockerRecommendations {
     
     Write-Host @"
 Based on the analysis of your ScanResult.xml, your PC has a driver or service 
-that isn't ready for Windows 11 24H2. Here are specific steps to resolve this issue:
+that isn't ready for Windows 11 25H2. Here are specific steps to resolve this issue:
 
 1. UPDATE DRIVERS:
    - Visit your PC manufacturer's website to download the latest drivers
@@ -251,8 +279,8 @@ that isn't ready for Windows 11 24H2. Here are specific steps to resolve this is
    - Create bootable media and perform a clean installation (saving your files)
 
 5. MICROSOFT WORKAROUNDS:
-   - Check the Microsoft Known Issues page for Windows 11 24H2 for possible workarounds
-   - Visit the link in your error message: https://go.microsoft.com/fwlink/?LinkId=2280120
+   - Check the Microsoft Known Issues page for Windows 11 25H2 for possible workarounds
+   - Visit https://aka.ms/WindowsReleaseHealth for the latest Windows 11 release health dashboard
 "@ -ForegroundColor White
 }
 
@@ -338,7 +366,7 @@ function Perform-DeepDriverScan {
     Write-Host "Scanning all installed drivers for potential compatibility issues..." -ForegroundColor Cyan
     
     # Get all devices
-    $allDevices = Get-WmiObject Win32_PnPEntity
+    $allDevices = Get-CimInstance -ClassName Win32_PnPEntity
     Write-Host "Found $($allDevices.Count) devices installed on your system." -ForegroundColor White
     
     # Get device driver details
@@ -517,11 +545,15 @@ function Perform-DeepDriverScan {
     # Check GPU drivers specifically
     Write-Host "`nChecking graphics card drivers (common upgrade blockers)..." -ForegroundColor Cyan
     
-    $graphicsDrivers = Get-WmiObject Win32_VideoController
+    $graphicsDrivers = Get-CimInstance -ClassName Win32_VideoController
     foreach ($gpu in $graphicsDrivers) {
         Write-Host "  GPU: $($gpu.Name)" -ForegroundColor White
         Write-Host "  Driver Version: $($gpu.DriverVersion)" -ForegroundColor White
-        Write-Host "  Driver Date: $([System.Management.ManagementDateTimeConverter]::ToDateTime($gpu.DriverDate))" -ForegroundColor White
+        
+        # CimInstance returns DriverDate as a proper DateTime object
+        if ($gpu.DriverDate) {
+            Write-Host "  Driver Date: $($gpu.DriverDate.ToString('yyyy-MM-dd'))" -ForegroundColor White
+        }
         
         # Check for Intel, NVIDIA or AMD to provide specific guidance
         if ($gpu.Name -match "NVIDIA") {
@@ -546,7 +578,7 @@ function Perform-DeepDriverScan {
         Write-Host "3. Visit your PC manufacturer's website for the latest driver packages" -ForegroundColor Yellow
     }
     else {
-        Write-Host "Your drivers appear to be in good condition, but some may still be incompatible with Windows 11 24H2." -ForegroundColor White
+        Write-Host "Your drivers appear to be in good condition, but some may still be incompatible with Windows 11 25H2." -ForegroundColor White
         Write-Host "Since Microsoft detected a driver or service issue, consider updating critical drivers anyway." -ForegroundColor White
     }
 }
@@ -814,12 +846,12 @@ function Export-DiagnosticReport {
     
     # Create HTML content sections (these would be populated by capturing output from various functions)
     $htmlContent = "<div class='section'><h2>System Information</h2>"
-    $htmlContent += "<p>This report identifies potential issues preventing your Windows 11 23H2 to 24H2 upgrade.</p>"
+    $htmlContent += "<p>This report identifies potential issues preventing your Windows 11 24H2 to 25H2 upgrade.</p>"
     $htmlContent += "</div>"
     
     # Create recommendations section
     $htmlRecommendations = "<div class='recommendation'><h2>Recommendations</h2>"
-    $htmlRecommendations += "<p class='warning'>Your PC has a driver or service that isn't ready for Windows 11 24H2.</p>"
+    $htmlRecommendations += "<p class='warning'>Your PC has a driver or service that isn't ready for Windows 11 25H2.</p>"
     $htmlRecommendations += "<ul>"
     $htmlRecommendations += "<li>Update all drivers, especially graphics, network, and storage drivers</li>"
     $htmlRecommendations += "<li>Temporarily disable security software during the upgrade</li>"
